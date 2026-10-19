@@ -7,7 +7,7 @@ name = "papillarray-pts"
 version = "0.1.0"
 description = "Contactile PapillArray PTS v2.0 串口协议解析与线程化串口工作器的共享核心"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 dependencies = [
     "numpy>=1.26",
@@ -25,7 +25,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
