@@ -4,7 +4,11 @@
 ROS 封装由各消费仓库自行维护。"""
 
 from .protocol import ParsedPacket, PTSProtocolReader, parse_packet, verify_checksum
-from .serial_worker import SerialWorker, SerialWorkerConfig
+from .serial_worker import (
+    SerialWorker,
+    SerialWorkerConfig,
+    wait_for_serial_device,
+)
 
 __all__ = [
     "PTSProtocolReader",
@@ -13,4 +17,5 @@ __all__ = [
     "SerialWorkerConfig",
     "parse_packet",
     "verify_checksum",
+    "wait_for_serial_device",
 ]
