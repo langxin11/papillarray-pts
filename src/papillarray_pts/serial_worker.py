@@ -26,6 +26,13 @@ _UINT32_MASK = 0xFFFFFFFF
 _UINT32_HALF = 0x80000000
 # 单次缺包达到该值才告警；少量缺包只计入统计，避免 1000 Hz 下日志刷屏。
 _LARGE_GAP_WARNING_PACKETS = 8
+# 串口打开后设备端积压的旧帧要几 ms 才涌入内核接收缓冲，立即 flush 清不到，
+# 静默 0.1 s 覆盖 USB 首个读 URB 往返与设备缓冲倾泻后再清空才有效（2026-10 实测）。
+BACKLOG_DRAIN_GRACE_SEC = 0.1
+# USB 插入后控制器固件启动 + 枚举约 1~2 s 才出现设备节点，5 s 默认值给足裕量。
+DEFAULT_DEVICE_WAIT_SEC = 5.0
+# 轮询间隔 50 ms：对枚举延迟的感知误差远小于固件启动时间本身。
+DEVICE_POLL_SEC = 0.05
 
 
 class SerialPort(Protocol):
@@ -64,6 +71,8 @@ class SerialWorkerConfig:
         max_packet_bytes: 单个协议帧允许的最大字节数。
         reconnect_initial_delay_sec: 首次重连等待时间，单位 s。
         reconnect_max_delay_sec: 最大重连等待时间，单位 s。
+        backlog_drain_grace_sec: 打开串口后等待设备端积压涌入内核再清空的静默时间，
+            单位 s；覆盖 USB 首个读 URB 往返与设备缓冲倾泻，0 表示跳过该防御。
     """
 
     port: str
@@ -73,6 +82,7 @@ class SerialWorkerConfig:
     max_packet_bytes: int = 8192
     reconnect_initial_delay_sec: float = 1.0
     reconnect_max_delay_sec: float = 10.0
+    backlog_drain_grace_sec: float = BACKLOG_DRAIN_GRACE_SEC
 
     def validate(self) -> None:
         """校验配置。
@@ -95,6 +105,8 @@ class SerialWorkerConfig:
             raise ValueError("reconnect_initial_delay_sec 必须大于 0")
         if self.reconnect_max_delay_sec < self.reconnect_initial_delay_sec:
             raise ValueError("reconnect_max_delay_sec 不能小于初始重连间隔")
+        if self.backlog_drain_grace_sec < 0:
+            raise ValueError("backlog_drain_grace_sec 不能为负")
 
 
 @dataclass
@@ -125,6 +137,28 @@ _OPEN_FAILURE_HINTS = {
 }
 
 _KERNEL_TTY_PATTERN = re.compile(r"/dev/tty(ACM|USB|S)\d+$")
+
+
+def wait_for_serial_device(port: str, wait_sec: float = DEFAULT_DEVICE_WAIT_SEC) -> bool:
+    """等待串口设备节点出现，覆盖 USB 热插拔后的枚举延迟。
+
+    USB 插入后控制器固件启动 + 枚举约 1~2 s 才出现 ``/dev/ttyACM*`` 节点；
+    入口程序在节点出现前启动会立即失败，统一在此提供有界等待。
+
+    Args:
+        port: 串口设备路径，如 /dev/ttyACM0 或 udev 软链接 /dev/papillarray。
+        wait_sec: 最长等待时间，单位 s；小于等于 0 时只检查一次不等待。
+
+    Returns:
+        True 表示节点已出现；False 表示等待超时仍不存在。
+    """
+    deadline = time.monotonic() + max(wait_sec, 0.0)
+    while True:
+        if os.path.exists(port):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(DEVICE_POLL_SEC)
 
 
 def _format_available_ports() -> str:
@@ -185,7 +219,7 @@ def _describe_open_failure(port: str, exc: Exception) -> str:
             return f"串口设备 {port} 不存在, 系统当前可用: {available}; 请确认 com_port 参数"
         return (
             f"串口别名 {port} 不存在: 设备未连接, 或 udev 规则未安装"
-            f" (规则文件见工作区 udev/ 目录); 系统当前可用: {available}"
+            f" (规则文件见本仓库 udev/ 目录); 系统当前可用: {available}"
         )
     if code in _OPEN_FAILURE_HINTS:
         return f"串口 {port} 打开失败: {_OPEN_FAILURE_HINTS[code]}"
@@ -329,13 +363,17 @@ class SerialWorker:
                 )
                 self._connected_event.set()
                 self._on_info(f"已连接 {self._config.port}，波特率 {self._config.baud_rate} baud")
-                # 清掉上次会话在内核接收缓冲区积压的旧包，避免其被盖上本次接收时间。
-                serial_port.reset_input_buffer()
                 self._reset_continuity()
                 self._write_payload(
                     serial_port,
                     f"f{self._config.sampling_rate}\n".encode("ascii"),
                 )
+                # 旧会话的帧滞留在设备端发送缓冲（实测可达 40 s 前），打开后几 ms
+                # 才涌入内核，因此立即 flush 清不到。采样率命令实测会让控制器自行
+                # 丢弃积压，但不能依赖该隐式固件行为，静默后统一清空做显式保证，
+                # 避免旧帧被盖上本次接收时间流入回调。
+                time.sleep(self._config.backlog_drain_grace_sec)
+                serial_port.reset_input_buffer()
                 reader = PTSProtocolReader(serial_port, self._config.max_packet_bytes)
                 received_valid_packet = False
 

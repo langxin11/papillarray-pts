@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 import numpy as np
+import pytest
 
 import papillarray_pts.serial_worker as worker_module
 from papillarray_pts.protocol import ParsedPacket
@@ -18,6 +19,7 @@ from papillarray_pts.serial_worker import (
     STOP_SLIP_COMMAND,
     SerialWorker,
     SerialWorkerConfig,
+    wait_for_serial_device,
 )
 
 
@@ -326,10 +328,14 @@ def test_stream_failure_keeps_plain_disconnect_message(monkeypatch: Any) -> None
     assert fake_serial.closed
 
 
-def test_connect_flushes_stale_input_before_sampling_rate_command(
+def test_connect_flushes_stale_input_after_sampling_rate_command(
     monkeypatch: Any,
 ) -> None:
-    """连接后应先清空接收缓冲再配置采样率，旧会话字节不进入本次数据流。"""
+    """连接后应发采样率命令并静默清空积压，旧会话字节不进入本次数据流。
+
+    设备端积压要打开后几 ms 才涌入内核，立即 flush 清不到；正确顺序是先写
+    命令、等待 grace、再 flush（顺序由事件流断言，grace 时长由配置控制）。
+    """
     monkeypatch.setattr(worker_module, "PTSProtocolReader", _FakeReader)
     fake_serial = _FakeSerial()
     worker = SerialWorker(
@@ -340,7 +346,7 @@ def test_connect_flushes_stale_input_before_sampling_rate_command(
     _wait_for(lambda: worker.is_connected)
     worker.stop()
 
-    assert fake_serial.events[:2] == [("flush", None), ("write", b"f500\n")]
+    assert fake_serial.events[:2] == [("write", b"f500\n"), ("flush", None)]
 
 
 def test_bias_command_clears_input_and_protocol_buffers() -> None:
@@ -443,3 +449,26 @@ def test_non_increasing_device_timestamp_is_reported() -> None:
 
     assert worker.non_monotonic_timestamps == 2
     assert any("未递增" in message for message in warnings)
+
+
+def test_wait_for_serial_device_accepts_existing_path() -> None:
+    """已存在的路径应立即成功，不进入等待循环。"""
+    assert wait_for_serial_device("/", wait_sec=0.0) is True
+
+
+def test_wait_for_serial_device_times_out_for_missing_path() -> None:
+    """不存在的设备路径在 0 s 等待下应立即失败，供入口程序转为报错。"""
+    assert wait_for_serial_device("/dev/papillarray-nonexistent-for-test", wait_sec=0.0) is False
+
+
+def test_config_rejects_negative_drain_grace() -> None:
+    """静默时长为负无意义，应在构造校验阶段拒绝。"""
+    config = SerialWorkerConfig(
+        port="/dev/fake",
+        baud_rate=115200,
+        sampling_rate=500,
+        backlog_drain_grace_sec=-0.1,
+    )
+
+    with pytest.raises(ValueError, match="backlog_drain_grace_sec"):
+        config.validate()
