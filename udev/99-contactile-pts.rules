@@ -1,0 +1,13 @@
+# Contactile PTS 传感器 udev 规则
+# 为 USB 串口设备赋予 dialout 组权限，避免每次 sudo
+# ID_MM_DEVICE_IGNORE: 阻止 ModemManager 探测该串口，避免插入后数秒内端口被抢占
+
+# 实测控制器枚举为 Teensy (16c0:0483, Teensyduino Serial)
+# 注意：16c0:0483 是所有 Teensyduino 固件的通用 ID，接其他 Teensy 板也会命中本规则
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="0483", ENV{ID_MM_DEVICE_IGNORE}="1", MODE="0660", GROUP="dialout", SYMLINK+="contactile_pts papillarray"
+
+# 旧版 DEV001 采用 CH340 USB 转串口 (1a86:7523)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ENV{ID_MM_DEVICE_IGNORE}="1", MODE="0660", GROUP="dialout", SYMLINK+="contactile_pts papillarray"
+
+# 通用 ACM 设备（如果上述 VID/PID 都不匹配，仅兜底权限，不做 MM 排除）
+SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*", MODE="0660", GROUP="dialout"

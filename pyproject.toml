@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "papillarray-pts"
-version = "0.1.0"
+version = "0.2.0"
 description = "Contactile PapillArray PTS v2.0 串口协议解析与线程化串口工作器的共享核心"
 readme = "README.md"
 requires-python = ">=3.10"
