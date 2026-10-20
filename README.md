@@ -1,6 +1,6 @@
 # papillarray-pts
 
-Contactile PapillArray（PTS v2.0）串口协议解析与线程化串口工作器的**共享核心包**。
+Contactile PapillArray（PTS v2.0）串口协议解析、线程化串口工作器与帧采集会话的**共享核心包**。
 只依赖 `pyserial` 与 `numpy`，不包含 ROS、MuJoCo 或任何夹爪控制逻辑。
 
 ## 为什么存在
@@ -25,6 +25,14 @@ Contactile PapillArray（PTS v2.0）串口协议解析与线程化串口工作�
     重复/回退/乱序与非递增设备时间戳即时告警；
   - 统计通过 `dropped_packets`、`disordered_packets`、`non_monotonic_timestamps`
     只读属性暴露，基线在每次连接和 bias 后重置。
+- `papillarray_pts.frames`（v0.3.0 新增）：逐传感器物理量帧模型与采集会话：
+  - `PTSFrame` 把 `ParsedPacket` 收敛为单传感器视图（位移 mm / 力 N / 力矩
+    N·mm，sensor frame），构造时强制 shape/dtype 校验；
+  - `frames_from_packet()` 按传感器索引位置对齐转换，pillar 数异常的传感器
+    以 `None` 占位并告警，避免调用方 zip 配对时数据错位到前一个通道；
+  - `iter_sensor_frames()` 生成器统一"设备等待 → 开串口 → 清积压 → 逐包
+    解析"的只读采集会话，串口在生成器关闭时释放。适合可视化/录制等
+    无需下发命令的场景；需要采样率/bias 命令或自动重连仍用 `SerialWorker`。
 
 ## USB 连接行为（2026-10 实测，Ubuntu 24.04）
 
@@ -47,7 +55,7 @@ Contactile PapillArray（PTS v2.0）串口协议解析与线程化串口工作�
 以固定提交（标签）的 git 依赖引入：
 
 ```toml
-"papillarray-pts @ git+https://github.com/langxin11/papillarray-pts.git@v0.2.0",
+"papillarray-pts @ git+https://github.com/langxin11/papillarray-pts.git@v0.3.0",
 ```
 
 ## 最小使用
@@ -60,6 +68,17 @@ worker = SerialWorker(config, on_packet=lambda packet: print(packet.packet_count
 worker.start()
 worker.send_command(b"z\n")  # bias：发送前必须确认传感器无负载
 worker.stop()
+```
+
+只读采集（可视化/录制）可直接用帧生成器，无需自管串口生命周期：
+
+```python
+from papillarray_pts import iter_sensor_frames
+
+for frames in iter_sensor_frames("/dev/papillarray"):
+    for frame in frames:  # 与传感器索引位置对齐，异常传感器为 None
+        if frame is not None:
+            print(frame.timestamp_us, frame.global_force)
 ```
 
 ## 来源与验证
