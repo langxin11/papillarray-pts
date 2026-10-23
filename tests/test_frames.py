@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -28,15 +29,6 @@ def _sensor_spec(pillar_count: int = 9, fill: float = 0.0) -> dict[str, Any]:
         "pillars": [[fill + 0.01 * i] * 6 for i in range(pillar_count)],
         "global": [fill, fill, fill, 0.0, 0.0, 0.0],
     }
-
-
-class _FakeSerial:
-    """按块吐出预置字节流并记录积压清理/关闭调用的串口替身。"""
-
-    def __init__(self, chunks: list[bytes]) -> None:
-        self._chunks = list(chunks)
-        self.reset_input_buffer_calls = 0
-        self.closed = False
 
 
 class _FakeSerial:
@@ -129,15 +121,17 @@ def test_frames_from_packet_keeps_sensor_alignment() -> None:
     assert frames[1].forces.shape == (PTS_N_PILLARS, 3)
 
 
-def test_iter_sensor_frames_yields_packets_then_closes_port() -> None:
+def test_iter_sensor_frames_yields_packets_then_closes_port(tmp_path: Path) -> None:
     """生成器应先清积压再逐包产帧，关闭生成器时释放串口。"""
     chunks = [
         _build_frame(_build_packet_data(1, 1_000, [_sensor_spec(fill=0.25)])),
         _build_frame(_build_packet_data(2, 3_000, [_sensor_spec(fill=0.5)])),
     ]
     created, factory = _fake_factory(chunks)
+    port = tmp_path / "papillarray"
+    port.touch()
     gen = iter_sensor_frames(
-        "/dev/papillarray",
+        str(port),
         backlog_drain_grace_sec=0.0,
         serial_factory=factory,
     )
@@ -150,13 +144,15 @@ def test_iter_sensor_frames_yields_packets_then_closes_port() -> None:
     assert created and created[0].closed
 
 
-def test_iter_sensor_frames_drains_backlog_before_parsing() -> None:
+def test_iter_sensor_frames_drains_backlog_before_parsing(tmp_path: Path) -> None:
     """grace > 0 时应先 reset_input_buffer 再读数据，丢弃旧会话积压字节。"""
     stale = _build_frame(_build_packet_data(99, 900_000, [_sensor_spec(fill=9.0)]))
     fresh = _build_frame(_build_packet_data(1, 1_000, [_sensor_spec(fill=0.1)]))
     created, factory = _fake_factory([stale], after_reset_chunks=[fresh])
+    port = tmp_path / "papillarray"
+    port.touch()
     gen = iter_sensor_frames(
-        "/dev/papillarray",
+        str(port),
         backlog_drain_grace_sec=0.001,
         serial_factory=factory,
     )
